@@ -177,6 +177,7 @@ class RESP:
     text: str
     url: str
     status_code: int
+    headers: dict = None
 
 
 class HandOver:
@@ -291,7 +292,7 @@ class HandOver:
         """
         client = await self._get_client()
         resp = await client.get(url, params=params, headers=headers, **kwargs)
-        return RESP(resp.text, str(resp.url), resp.status_code)
+        return RESP(resp.text, str(resp.url), resp.status_code, dict(resp.headers))
 
     async def post(
         self,
@@ -328,7 +329,7 @@ class HandOver:
             json=json,
             **kwargs,
         )
-        return RESP(resp.text, str(resp.url), resp.status_code)
+        return RESP(resp.text, str(resp.url), resp.status_code, dict(resp.headers))
 
     async def download(self, url: str, headers: Optional[dict[str, str]] = None) -> bytes:
         """

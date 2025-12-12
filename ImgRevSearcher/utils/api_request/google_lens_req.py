@@ -1,151 +1,189 @@
-from pathlib import Path
-from typing import Any, Literal, Optional, Union
-from pyquery import PyQuery
+from typing import Any, Optional, Dict
 from typing_extensions import override
-from ..response_parser import GoogleLensExactMatchesResponse, GoogleLensResponse
-from ..network import RESP
-from ..ext_tools import read_file
+import requests
+import json
+
+from ..response_parser.google_lens_parser import GoogleLensResponse
 from .base_req import BaseSearchReq
-from ..types import FileContent
+from astrbot.api import logger
 
-
-VALID_SEARCH_TYPES = ["all", "products", "visual_matches", "exact_matches"]
-SEARCH_TYPE_UDM = {
-    "products": "37",
-    "visual_matches": "44",
-    "exact_matches": "48"
-}
-
-
-class GoogleLens(BaseSearchReq[Union[GoogleLensResponse, GoogleLensExactMatchesResponse]]):
-    """
-    Google Lens搜索请求类
-    
-    提供基于图像的搜索功能，支持多种搜索类型和过滤选项
-    """
-    
-    def __init__(
-        self,
-        base_url: str = "https://lens.google.com",
-        search_url: str = "https://www.google.com",
-        search_type: Literal["all", "products", "visual_matches", "exact_matches"] = "all",
-        q: Optional[str] = None,
-        hl: str = "en",
-        country: str = "US",
-        max_results: int = 50,
-        **request_kwargs: Any,
-    ):
-        """
-        初始化Google Lens搜索请求
-        
-        参数:
-            base_url: Google Lens API基础URL
-            search_url: Google搜索基础URL
-            search_type: 搜索类型，可选值为"all"、"products"、"visual_matches"或"exact_matches"
-            q: 搜索查询词
-            hl: 界面语言代码
-            country: 国家/地区代码
-            max_results: 最大结果数量
-            **request_kwargs: 其他请求参数
-            
-        异常:
-            ValueError: 当搜索类型无效、参数组合不兼容或max_results不是正整数时抛出
-        """
-        super().__init__(base_url, **request_kwargs)
-        if search_type not in VALID_SEARCH_TYPES:
-            raise ValueError(f"无效的search_type: {search_type}。必须是以下之一: {', '.join(VALID_SEARCH_TYPES)}")
-        if search_type == "exact_matches" and q:
-            raise ValueError("Query parameter 'q' is not applicable for 'exact_matches' search_type.")
-        if max_results <= 0:
-            raise ValueError("max_results must be a positive integer")
-        self.search_url: str = search_url
-        self.hl_param: str = f"{hl}-{country.upper()}"
-        self.search_type: str = search_type
-        self.q: Optional[str] = q
-        self.max_results: int = max_results
-
-    async def _perform_image_search(
-        self,
-        url: Optional[str] = None,
-        file: FileContent = None,
-        q: Optional[str] = None,
-    ) -> RESP:
-        """
-        执行图像搜索请求
-        
-        参数:
-            url: 图像URL
-            file: 本地文件内容
-            q: 搜索查询词
-            
-        返回:
-            RESP: HTTP响应对象
-            
-        异常:
-            ValueError: 当未提供url或file参数时抛出
-        """
-        params = {"hl": self.hl_param}
-        if q and self.search_type != "exact_matches":
-            params["q"] = q
-        if file:
-            endpoint = "v3/upload"
-            filename = "image.jpg" if isinstance(file, bytes) else Path(file).name
-            files = {"encoded_image": (filename, read_file(file), "image/jpeg")}
-            resp = await self._send_request(
-                method="post",
-                endpoint=endpoint,
-                params=params,
-                files=files,
-            )
-        elif url:
-            endpoint = "uploadbyurl"
-            params["url"] = url
-            resp = await self._send_request(
-                method="post" if file else "get",
-                endpoint=endpoint,
-                params=params,
-            )
-        else:
-            raise ValueError("Either 'url' or 'file' must be provided")
-        dom = PyQuery(resp.text)
-        exact_link = ""
-        
-        if self.search_type != "all" and self.search_type in SEARCH_TYPE_UDM:
-            udm_value = SEARCH_TYPE_UDM[self.search_type]
-            exact_link = dom(f'a[href*="udm={udm_value}"]').attr("href") or ""
-            
-        if exact_link:
-            return await self._send_request(method="get", url=f"{self.search_url}{exact_link}")
-        return resp
+class GoogleLensSerpApi(BaseSearchReq[GoogleLensResponse]):
+    def __init__(self, api_key: str, **kwargs: Any):
+        super().__init__("https://serpapi.com/search") # Pass base_url
+        self.api_key = api_key
+        # SerpApi params matched to user's example
+        self.engine = "google_lens"
 
     @override
-    async def search(
-        self,
-        url: Optional[str] = None,
-        file: FileContent = None,
-        q: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Union[GoogleLensResponse, GoogleLensExactMatchesResponse]:
-        """
-        执行Google Lens搜索
+    async def search(self, file: Optional[bytes] = None, url: Optional[str] = None, **kwargs: Any) -> GoogleLensResponse:
+        logger.info(f"[SerpApi] Searching via Google Lens engine...")
         
-        参数:
-            url: 图像URL
-            file: 本地文件内容
-            q: 搜索查询词，对于exact_matches类型会被忽略
-            **kwargs: 其他搜索参数
+        params = {
+            "engine": self.engine,
+            "api_key": self.api_key,
+            "country": kwargs.get("country", "us"), # Default US
+            "hl": kwargs.get("hl", "en"),
+            "q": kwargs.get("q"),
+            "no_cache": kwargs.get("no_cache", False)
+        }
+        
+        if url:
+            params["url"] = url
+        elif file:
+            # SerpApi doesn't support direct binary upload via 'url' param easily unless we host it.
+            # However, for simplicity and since we don't have a public URL for local files in this plugin structure efficiently (Litterbox is internal to Ascii2D utils),
+            # Update: SerpApi documentation says they assume public URL.
+            # But the user might provide a bytes object `file`. 
+            # We must use proper handling.
+            # Strategy: If file provided, upload to Litterbox first (reusing Ascii2D logic would be ideal but circular import risk).
+            # ALTERNATIVE: SerpApi DOES NOT support direct image upload for Google Lens API easily without a URL.
+            # Wait, Google Reverse Image API supports it, but Lens API usually needs a URL.
+            # Let's revert to a quick Litterbox upload Helper or check if we can reuse the one from ascii2d (if refactored) or just duplicate the simple requests post.
+            # Let's verify what the old code did. Old code used Selenium to upload.
             
-        返回:
-            Union[GoogleLensResponse, GoogleLensExactMatchesResponse]: 根据搜索类型返回相应的响应对象
-        """
-        if q is not None and self.search_type == "exact_matches":
-            q = None
-        resp = await self._perform_image_search(url, file, q)
-        if self.search_type == "exact_matches":
-            response = GoogleLensExactMatchesResponse(resp.text, resp.url)
-            response._parse_response(resp.text, resp_url=resp.url, max_results=self.max_results)
-            return response
-        else:
-            response = GoogleLensResponse(resp.text, resp.url)
-            response._parse_response(resp.text, resp_url=resp.url, max_results=self.max_results)
-            return response
+            # For now, let's implement a quick temp host uploader here or use a common utility.
+            # Better: Use the same Litterbox logic.
+            url = self._upload_to_litterbox(file)
+            params["url"] = url
+        
+        # Requests is blocking, wrap in thread if needed, but for now simple sync should be fine or use run_in_executor
+        import asyncio
+        data = await asyncio.to_thread(self._fetch_serpapi, params)
+        
+        # Parse logic
+        # We need to convert SerpApi JSON to GoogleLensResponse
+        # Use a special parser method or generic text
+        # GoogleLensResponse expects (text, url, status_code, headers) usually, 
+        # BUT since we have JSON, we might need to adapt the parser or return a mock RESP object with JSON string.
+        
+        return GoogleLensResponse(
+            resp_data=json.dumps(data), 
+            resp_url=f"https://serpapi.com/search?engine={self.engine}", 
+            status_code=200, 
+            headers={},
+            **kwargs
+        )
+
+    def _fetch_serpapi(self, params):
+        resp = requests.get("https://serpapi.com/search", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _upload_to_litterbox(self, file: bytes) -> str:
+        # Simple upload implementation
+        files = {'fileToUpload': ('image.jpg', file, 'image/jpeg')}
+        data = {'reqtype': 'fileupload', 'time': '1h'}
+        resp = requests.post("https://litterbox.catbox.moe/resources/internals/api.php", files=files, data=data, timeout=30)
+        resp.raise_for_status()
+        url = resp.text
+        if not url.startswith("http"):
+            raise Exception(f"Upload failed: {url}")
+        return url
+
+
+class GoogleLensZenserp(BaseSearchReq[GoogleLensResponse]):
+    def __init__(self, api_key: str, **kwargs: Any):
+        super().__init__("https://app.zenserp.com/api/v2/search")
+        self.api_key = api_key
+
+    @override
+    async def search(self, file: Optional[bytes] = None, url: Optional[str] = None, **kwargs: Any) -> GoogleLensResponse:
+        logger.info(f"[Zenserp] Searching via Google Reverse Image...")
+        
+        headers = {
+            "apikey": self.api_key
+        }
+        params = {
+            "gl": kwargs.get("country", "CN"),
+            "hl": kwargs.get("hl", "zh-CN"),
+        }
+        
+        if url:
+            params["image_url"] = url
+        elif file:
+            url = self._upload_to_litterbox(file)
+            params["image_url"] = url
+            
+        import asyncio
+        data = await asyncio.to_thread(self._fetch_zenserp, headers, params)
+        
+        return GoogleLensResponse(
+            resp_data=json.dumps(data), 
+            resp_url="https://app.zenserp.com/api/v2/search", 
+            status_code=200, 
+            headers={},
+            **kwargs
+        )
+        
+    def _fetch_zenserp(self, headers, params):
+        resp = requests.get("https://app.zenserp.com/api/v2/search", headers=headers, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _upload_to_litterbox(self, file: bytes) -> str:
+        files = {'fileToUpload': ('image.jpg', file, 'image/jpeg')}
+        data = {'reqtype': 'fileupload', 'time': '1h'}
+        resp = requests.post("https://litterbox.catbox.moe/resources/internals/api.php", files=files, data=data, timeout=30)
+        resp.raise_for_status()
+        url = resp.text
+        if not url.startswith("http"):
+             raise Exception(f"Upload failed: {url}")
+        return url
+
+
+class GoogleLens(BaseSearchReq[GoogleLensResponse]):
+    def __init__(self, **kwargs: Any):
+        super().__init__("https://google.com")
+        self.api_keys = kwargs.get("api_keys", {})
+        self.serpapi_key = self.api_keys.get("serpapi") or kwargs.get("serpapi_key")
+        self.zenserp_key = self.api_keys.get("zenserp") or kwargs.get("zenserp_key")
+        
+        self.primary = None
+        self.backup = None
+        
+        if self.serpapi_key:
+            self.primary = GoogleLensSerpApi(self.serpapi_key, **kwargs)
+            logger.info("[GoogleLens] Primary Engine: SerpApi (Google Lens)")
+        
+        if self.zenserp_key:
+            self.backup = GoogleLensZenserp(self.zenserp_key, **kwargs)
+            logger.info("[GoogleLens] Backup Engine: Zenserp (Google Reverse Image)")
+            
+        if not self.primary and not self.backup:
+             logger.warning("[GoogleLens] No API keys configured. Functionality disabled.")
+
+    @override
+    async def search(self, file: Optional[bytes] = None, url: Optional[str] = None, **kwargs: Any) -> GoogleLensResponse:
+        # Strategy: Primary -> Retry(Connection) -> Backup
+        import asyncio
+        
+        # 1. Try Primary (if available)
+        if self.primary:
+             try:
+                 return await self._try_search(self.primary, file, url, **kwargs)
+             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError) as e:
+                 logger.warning(f"[GoogleLens] Primary Connection Error: {e}. Retrying once...")
+                 try:
+                     # Simple retry delay
+                     await asyncio.sleep(1)
+                     return await self._try_search(self.primary, file, url, **kwargs)
+                 except Exception as retry_e:
+                     logger.error(f"[GoogleLens] Primary Retry Failed: {retry_e}")
+                     # Proceed to fallback
+             except Exception as e:
+                 logger.error(f"[GoogleLens] Primary Engine Failed: {e}")
+                 # Proceed to fallback
+
+        # 2. Try Backup (if available)
+        if self.backup:
+            logger.warning("[GoogleLens] Switching to Backup Engine (Zenserp)...")
+            try:
+                return await self._try_search(self.backup, file, url, **kwargs)
+            except Exception as e:
+                logger.error(f"[GoogleLens] Backup Engine Failed: {e}")
+                # Both failed
+        
+        raise RuntimeError("Google Lens Search Failed: All configured engines exhausted.")
+
+    async def _try_search(self, engine, file, url, **kwargs):
+        return await engine.search(file=file, url=url, **kwargs)

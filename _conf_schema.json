@@ -34,12 +34,14 @@
     "type": "object",
     "hint": "配置触发搜索的关键词和各搜索引擎的自定义关键词",
     "items": {
-       "trigger_keywords": {
-         "description": "触发搜索的关键词列表",
-         "type": "list",
-         "hint": "用户发送任意一个关键词时触发图片搜索功能，留空则使用默认关键词",
-         "default": ["以图搜图"]
-       },
+      "trigger_keywords": {
+        "description": "触发搜索的关键词列表",
+        "type": "list",
+        "hint": "用户发送任意一个关键词时触发图片搜索功能，留空则使用默认关键词",
+        "default": [
+          "以图搜图"
+        ]
+      },
       "engine_keywords": {
         "description": "各搜索引擎的自定义关键词（别名）",
         "type": "object",
@@ -50,15 +52,15 @@
             "type": "string",
             "default": "a"
           },
+          "ascii2d": {
+            "description": "ASCII2D",
+            "type": "string",
+            "default": "a2"
+          },
           "baidu": {
             "description": "Baidu",
             "type": "string",
-            "default": "b1"
-          },
-          "bing": {
-            "description": "Bing",
-            "type": "string",
-            "default": "b2"
+            "default": "b"
           },
           "copyseeker": {
             "description": "CopySeeker",
@@ -71,9 +73,24 @@
             "default": "e"
           },
           "google": {
-            "description": "Google Lens",
+            "description": "Google",
             "type": "string",
             "default": "g"
+          },
+          "iqdb": {
+            "description": "IQDB",
+            "type": "string",
+            "default": "i"
+          },
+          "tracemoe": {
+            "description": "TraceMoe",
+            "type": "string",
+            "default": "t"
+          },
+          "yandex": {
+            "description": "Yandex",
+            "type": "string",
+            "default": "y"
           },
           "saucenao": {
             "description": "SauceNAO",
@@ -83,7 +100,7 @@
           "tineye": {
             "description": "TinEye",
             "type": "string",
-            "default": "t"
+            "default": "t2"
           }
         }
       }
@@ -98,20 +115,20 @@
         "type": "bool",
         "default": true
       },
-      "baidu": {
-        "description": "Baidu",
+      "ascii2d": {
+        "description": "Ascii2D",
         "type": "bool",
         "default": true
       },
-      "bing": {
-        "description": "Bing",
+      "baidu": {
+        "description": "Baidu",
         "type": "bool",
         "default": true
       },
       "copyseeker": {
         "description": "CopySeeker",
         "type": "bool",
-        "default": false
+        "default": true
       },
       "ehentai": {
         "description": "E-Hentai/ExHentai",
@@ -120,6 +137,21 @@
       },
       "google": {
         "description": "Google Lens",
+        "type": "bool",
+        "default": true
+      },
+      "iqdb": {
+        "description": "IQDB",
+        "type": "bool",
+        "default": true
+      },
+      "tracemoe": {
+        "description": "TraceMoe",
+        "type": "bool",
+        "default": true
+      },
+      "yandex": {
+        "description": "Yandex",
         "type": "bool",
         "default": true
       },
@@ -163,6 +195,18 @@
           }
         }
       },
+      "copyseeker": {
+        "description": "CopySeeker",
+        "type": "object",
+        "items": {
+          "copyseeker_api_key": {
+            "description": "RapidAPI Key (copyseeker)",
+            "type": "string",
+            "hint": "RapidAPI密钥, 必填",
+            "default": ""
+          }
+        }
+      },
       "ehentai": {
         "description": "EHentai",
         "type": "object",
@@ -187,38 +231,64 @@
             "description": "是否启用实验性搜索模式",
             "type": "bool",
             "default": false
+          },
+          "cookies": {
+            "description": "E-Hentai Cookies",
+            "type": "string",
+            "hint": "格式如: ipb_member_id=...; ipb_pass_hash=...; igneous=.... ExHentai搜索必需。",
+            "default": null
           }
         }
       },
       "google": {
-        "description": "Google Lens",
+        "description": "Google API",
         "type": "object",
         "items": {
-          "search_type": {
-            "description": "搜索类型",
+          "serpapi_key": {
+            "description": "SerpApi API Key",
             "type": "string",
-            "hint": "可选项: all(全部搜索), products(产品搜索), visual_matches(视觉匹配), exact_matches(精确匹配)",
-            "default": "exact_matches"
+            "hint": "可选 (推荐). 从 https://serpapi.com/ 申请. 使用Google Lens实现。",
+            "default": null
           },
-          "q": {
-            "description": "搜索查询参数(仅在search_type不为'exact_matches'时适用)",
+          "zenserp_key": {
+            "description": "Zenserp API Key",
             "type": "string",
+            "hint": "可选 (备用). 从 https://zenserp.com/ 申请. 使用Google Reverse Image实现。",
             "default": null
           },
           "hl": {
-            "description": "语言参数",
+            "description": "语言 (Language)",
             "type": "string",
-            "default": "en"
+            "hint": "Google界面语言代码 (如: zh-CN, en, ja)",
+            "default": "zh-CN"
           },
           "country": {
-            "description": "区域设置参数",
+            "description": "国家/地区 (Country)",
             "type": "string",
-            "default": "HK"
+            "hint": "搜索结果针对的国家/地区代码 (如: cn, us, jp)",
+            "default": "AU"
           },
           "max_results": {
-            "description": "最大搜索结果数",
+            "description": "最大结果数",
             "type": "int",
-            "default": 50
+            "hint": "API返回的最大结果数量 (注意: SerpApi/Zenserp分页可能耗费额度)",
+            "default": 10
+          }
+        }
+      },
+      "tracemoe": {
+        "description": "TraceMoe",
+        "type": "object",
+        "items": {
+          "api_key": {
+            "description": "TraceMoe API密钥",
+            "type": "string",
+            "default": null
+          },
+          "cut_borders": {
+            "description": "是否剪裁黑边",
+            "type": "bool",
+            "default": true
           }
         }
       },
@@ -230,7 +300,7 @@
             "description": "SauceNAO API密钥",
             "type": "string",
             "hint": "用于访问SauceNAO API，免费账户每日限制150次，每30秒4次",
-            "default": "a4ab3f81009b003528f7e31aed187fa32a063f58"
+            "default": null
           },
           "hide": {
             "description": "隐藏级别",
@@ -286,53 +356,24 @@
             "default": "desc"
           }
         }
-      }
-    }
-  },
-  "default_cookies": {
-    "description": "默认Cookie",
-    "type": "object",
-    "hint": "部分搜索引擎需要Cookie以获取更好的搜索结果",
-    "items": {
-      "ehentai": {
-        "description": "EHentai",
-        "type": "string",
-        "hint": "格式如: ipb_member_id=; ipb_pass_hash=; igneous=，ExHentai搜索必须提供有效Cookie",
-        "default": null
       },
-      "google": {
-        "description": "Google Lens",
-        "type": "string",
-        "hint": "无痕模式Cookie有效期约1天，建议不要使用登录状态的Cookie",
-        "default": null
-      }
-    }
-  },
-  "auto_google_cookie": {
-    "description": "Google Lens Cookie 自动获取设置",
-    "type": "object",
-    "items": {
-      "enabled": {
-        "description": "是否自动获取 Cookie",
-        "type": "bool",
-        "default": true
-      },
-      "use_remote": {
-        "description": "是否使用远程 Selenium 服务",
-        "type": "bool",
-        "default": false
-      },
-      "remote_addr": {
-        "description": "远程 Selenium 服务器地址",
-        "type": "string",
-        "hint": "如 http://localhost:4444/wd/hub",
-        "default": null
-      },
-      "update_interval": {
-        "description": "Cookie 更新间隔（秒）",
-        "type": "int",
-        "default": 43200
+      "yandex": {
+        "description": "Yandex",
+        "type": "object",
+        "items": {
+          "max_results": {
+            "description": "最大结果数",
+            "type": "int",
+            "default": 10
+          },
+          "use_ru_fallback": {
+            "description": "启用 .ru 域名回退",
+            "type": "bool",
+            "hint": "当 .com 访问失败时尝试使用 yandex.ru",
+            "default": true
+          }
+        }
       }
     }
   }
-} 
+}

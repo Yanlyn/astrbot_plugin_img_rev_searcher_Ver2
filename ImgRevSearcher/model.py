@@ -4,15 +4,20 @@ from typing import Any, Optional
 from PIL import Image, ImageDraw, ImageFont
 from .utils import Network
 from .utils.types import FileContent
-from .utils.api_request import AnimeTrace, BaiDu, Bing, Copyseeker, EHentai, GoogleLens, SauceNAO, Tineye
-import time
+from .utils.api_request import AnimeTrace, BaiDu, Copyseeker, EHentai, GoogleLens, SauceNAO, Tineye, Ascii2D, Iqdb, TraceMoe, Yandex
+
 import asyncio
+from astrbot.api import logger
 
 
 ENGINE_MAP = {
     "animetrace": AnimeTrace,
+    "ascii2d": Ascii2D,
+    "iqdb": Iqdb,
+    "tracemoe": TraceMoe,
+    "yandex": Yandex,
     "baidu": BaiDu,
-    "bing": Bing,
+
     "copyseeker": Copyseeker,
     "ehentai": EHentai,
     "google": GoogleLens,
@@ -31,7 +36,7 @@ class BaseSearchModel:
 
     def __init__(self, proxies: Optional[str] = None, cookies: Optional[dict] = None,
                  timeout: int = 60, default_params: Optional[dict] = None, 
-                 default_cookies: Optional[dict] = None, auto_google_config: Optional[dict] = None):
+                 default_cookies: Optional[dict] = None):
         """
         初始化搜索模型
 
@@ -47,9 +52,8 @@ class BaseSearchModel:
         self.timeout = timeout
         self.default_params = default_params or {}
         self.default_cookies = default_cookies or {}
-        self.auto_google_config = auto_google_config or {}
-        self._google_cookie = None
-        self._google_cookie_timestamp = 0
+        self._yandex_cookie = None
+        self._yandex_cookie_timestamp = 0
 
     def _prepare_engine_params(self, api: str, search_params: dict) -> dict:
         """
@@ -64,6 +68,9 @@ class BaseSearchModel:
         """
         engine_params = {}
 
+        if api == "ascii2d":
+            engine_params = {}
+
         if api == "animetrace":
             engine_params = {
                 "is_multi": search_params.pop("is_multi", None),
@@ -74,7 +81,8 @@ class BaseSearchModel:
                 "is_ex": search_params.pop("is_ex", False),
                 "covers": search_params.pop("covers", False),
                 "similar": search_params.pop("similar", True),
-                "exp": search_params.pop("exp", False)
+                "exp": search_params.pop("exp", False),
+                "cookies": search_params.pop("cookies", None) # New location for EH cookie
             }
         elif api == "saucenao":
             engine_params = {
@@ -90,37 +98,63 @@ class BaseSearchModel:
                 "dbs": search_params.pop("dbs", None)
             }
         elif api == "google":
+            # Extract keys directly from search_params as per schema
+            serpapi_key = search_params.get("serpapi_key")
+            zenserp_key = search_params.get("zenserp_key")
+            
+            # Fallback to checking api_keys dict if user manually edited or testing
+            if not serpapi_key and not zenserp_key:
+                 api_keys = search_params.get("api_keys", {})
+                 serpapi_key = api_keys.get("serpapi")
+                 zenserp_key = api_keys.get("zenserp")
+
             engine_params = {
-                "search_type": search_params.pop("search_type", "exact_matches"),
-                "hl": search_params.pop("hl", "en"),
-                "country": search_params.pop("country", "HK"),
-                "q": search_params.get("q", None),
-                "max_results": search_params.pop("max_results", 50)
+                "serpapi_key": serpapi_key,
+                "zenserp_key": zenserp_key,
+                "country": search_params.get("country", "HK"), 
+                "hl": search_params.get("hl", "zh-CN"),
+                "max_results": search_params.get("max_results", 10)
+            }
+        elif api == "yandex":
+            engine_params = {
+                "max_results": search_params.get("max_results", 10),
+                "use_ru_fallback": search_params.get("use_ru_fallback", True)
+            }
+        elif api == "copyseeker":
+            engine_params = {
+                "copyseeker_api_key": search_params.get("copyseeker_api_key", "")
             }
 
         return engine_params
 
-    async def _get_google_cookie(self):
-        if not self.auto_google_config.get("enabled", False):
-            return self.default_cookies.get("google")
-        now = time.time()
-        if now - self._google_cookie_timestamp < self.auto_google_config.get("update_interval", 43200):
-            return self._google_cookie
-        from .utils.cookie_manager import GoogleImagesCookieExtractor
-        extractor = GoogleImagesCookieExtractor(
-            remote_addr=self.auto_google_config.get("remote_addr") if self.auto_google_config.get("use_remote") else None,
-            headless=True,
-            timeout=30
-        )
+    # Removed Google Cookie Methods
+
+
+    async def _get_yandex_cookie(self):
+        # Automated cookie fetching via Selenium removed to reduce dependencies.
+        # Users should provide manual cookies if needed.
+        return self.default_cookies.get("yandex")
+    
+    async def _check_yandex_cookie(self, cookie: dict) -> bool:
+        """
+        验证 Yandex Cookie 是否有效 (尝试访问主页)
+        """
+        if not cookie:
+            return False
         try:
-            result = await asyncio.to_thread(extractor.quick_run)
-            if result:
-                self._google_cookie = result["cookie"]
-                self._google_cookie_timestamp = now
-                return self._google_cookie
+            # 简单 HEAD 请求或 GET 请求，检查是否返回 200 且无 CAPTCHA
+            async with Network(cookies=cookie, proxies=self.proxies, timeout=10) as client:
+                resp = await client.get("https://yandex.com/images/")
+                if resp.status_code == 200 and "captcha" not in resp.text.lower():
+                    return True
         except Exception:
             pass
-        return self.default_cookies.get("google")
+        return False
+
+    async def _get_yandex_cookie(self):
+        # Automated cookie fetching removed.
+        # Fallback to manual default cookie if provided.
+        return self.default_cookies.get("yandex")
 
     def _is_gif(self, file: FileContent) -> bool:
         """
@@ -195,8 +229,9 @@ class BaseSearchModel:
             if self.proxies:
                 network_kwargs["proxies"] = self.proxies
             effective_cookies = None
-            if api == "google":
-                effective_cookies = await self._get_google_cookie()
+            if api == "yandex":
+                effective_cookies = await self._get_yandex_cookie()
+
             elif api in self.default_cookies:
                 effective_cookies = self.default_cookies.get(api)
             elif self.cookies:
@@ -217,7 +252,11 @@ class BaseSearchModel:
                 else:
                     response = await engine_instance.search(file=file, url=url, **search_params)
                 return response.show_result()
-        except Exception:
+
+        except Exception as e:
+            logger.error(f"[{api}] Search failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     async def search_and_print(self, api: str, file: FileContent = None,

@@ -11,16 +11,24 @@ from PIL import Image, ImageDraw, ImageFont
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image as AstrImage, Nodes, Node, Plain
 from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
+import base64
+import socket
+import ipaddress
+from urllib.parse import urlparse
 from .ImgRevSearcher.model import BaseSearchModel
 
 ALL_ENGINES = [
-    "animetrace", "baidu", "bing", "copyseeker", "ehentai", "google", "saucenao", "tineye"
+    "animetrace", "ascii2d", "iqdb", "tracemoe", "yandex", "baidu", "copyseeker", "ehentai", "google", "saucenao", "tineye"
 ]
 
 ENGINE_INFO = {
     "animetrace": {"url": "https://www.animetrace.com/", "anime": True},
+    "ascii2d": {"url": "https://ascii2d.net/", "anime": True},
+    "iqdb": {"url": "https://iqdb.org/", "anime": True},
+    "tracemoe": {"url": "https://trace.moe/", "anime": True},
+    "yandex": {"url": "https://yandex.com/images/", "anime": False},
     "baidu": {"url": "https://graph.baidu.com/", "anime": False},
-    "bing": {"url": "https://www.bing.com/images/search", "anime": False},
     "copyseeker": {"url": "https://copyseeker.net/", "anime": False},
     "ehentai": {"url": "https://e-hentai.org/", "anime": True},
     "google": {"url": "https://lens.google.com/", "anime": False},
@@ -208,19 +216,189 @@ class ImgRevSearcherPlugin(Star):
             keyword = engine_keywords_config.get(engine)
             if keyword and keyword.strip():
                 self.engine_keywords[keyword.strip().lower()] = engine
+        default_params = config.get("default_params", {})
         self.search_model = BaseSearchModel(
             proxies=config.get("proxies", ""),
             timeout=60,
-            default_params=config.get("default_params", {}),
-            default_cookies=config.get("default_cookies", {}),
-            auto_google_config=config.get("auto_google_cookie", {})
+            default_params=default_params,
+            default_cookies=config.get("default_cookies", {})
         )
         self.state_handlers = {
             "waiting_text_confirm": self._handle_waiting_text_confirm,
             "waiting_engine": self._handle_waiting_engine,
             "waiting_both": self._handle_waiting_both,
             "waiting_image": self._handle_waiting_image,
+            "waiting_both": self._handle_waiting_both,
+            "waiting_image": self._handle_waiting_image,
+            "waiting_mode_selection": self._handle_waiting_mode_selection,
         }
+
+
+    @staticmethod
+    def _is_safe_url(url: str) -> bool:
+        """
+        检查 URL 是否安全 (防止 SSRF)
+        """
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ('http', 'https'):
+                return False
+            
+            hostname = parsed.hostname
+            if not hostname:
+                return False
+                
+            # 获取 IP 地址
+            try:
+                addr_info = socket.getaddrinfo(hostname, None)
+            except socket.gaierror:
+                return False
+                
+            for family, socktype, proto, canonname, sockaddr in addr_info:
+                ip_str = sockaddr[0]
+                ip = ipaddress.ip_address(ip_str)
+                # 禁止以下类型的 IP
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
+                    # logger.warning(f"检测到不安全的 IP 地址: {ip_str} ({hostname})")
+                    return False
+            
+            return True
+        except Exception as e:
+            # logger.warning(f"URL 安全检查失败: {e}")
+            return False
+
+    async def _fetch_reply_images_via_api(self, event: AstrMessageEvent, reply_id: str) -> List[io.BytesIO]:
+        """通过 OneBot API 获取被引用消息中的图片"""
+        images = []
+        try:
+            # 尝试获取底层 client 并调用 get_msg API
+            client = None
+            
+            # 方式1：从 event.raw_event 获取 bot 实例
+            if hasattr(event, 'raw_event') and event.raw_event:
+                raw = event.raw_event
+                if hasattr(raw, 'bot'):
+                    client = raw.bot
+                elif hasattr(raw, '_bot'):
+                    client = raw._bot
+            
+            # 方式2：从 context 获取
+            if not client and hasattr(self, 'context') and self.context:
+                # AstrBot 3.4+
+                if hasattr(self.context, 'get_platform_client'):
+                    client = self.context.get_platform_client()
+                elif hasattr(self.context, 'platform_manager'):
+                    pm = self.context.platform_manager
+                    if hasattr(pm, 'get_client'):
+                        client = pm.get_client('aiocqhttp')
+            
+            if not client:
+                return images
+            
+            # 调用 get_msg API
+            result = None
+            if hasattr(client, 'call_api'):
+                result = await client.call_api('get_msg', message_id=int(reply_id))
+            elif hasattr(client, 'get_msg'):
+                result = await client.get_msg(message_id=int(reply_id))
+            
+            if not result:
+                return images
+            
+            # 解析返回的消息
+            message_content = None
+            if isinstance(result, dict):
+                message_content = result.get('message', [])
+            elif hasattr(result, 'message'):
+                message_content = result.message
+            
+            if not message_content:
+                return images
+            
+            urls = []
+            for seg in message_content:
+                seg_type = None
+                seg_data = None
+                
+                if isinstance(seg, dict):
+                    seg_type = seg.get('type')
+                    seg_data = seg.get('data', {})
+                elif hasattr(seg, 'type'):
+                    seg_type = seg.type
+                    seg_data = getattr(seg, 'data', {})
+                
+                if seg_type == 'image':
+                    img_url = None
+                    if isinstance(seg_data, dict):
+                        img_url = seg_data.get('url') or seg_data.get('file')
+                    elif hasattr(seg_data, 'url'):
+                        img_url = seg_data.url
+                    
+                    if img_url and self._is_safe_url(img_url):
+                        urls.append(img_url)
+            
+            if urls:
+                images = await self.get_imgs(urls)
+                        
+        except Exception as e:
+            logger.warning(f"通过 API 获取被引用消息失败: {e}")
+        
+        return images
+
+    async def _collect_input_images(self, event: AstrMessageEvent) -> List[io.BytesIO]:
+        """收集图片（BytesIO格式），支持直接发送和引用"""
+        images = []
+        reply_id = None
+        reply_images_found = False
+
+        # 1. 检查当前消息中的图片
+        # 兼容旧逻辑 get_img_urls
+        curr_url = get_img_urls(event.message_obj)
+        if curr_url:
+            imgs = await self.get_imgs([curr_url])
+            if imgs:
+                images.extend(imgs)
+
+        # 2. 检查引用
+        if hasattr(event, "message_obj") and event.message_obj and hasattr(event.message_obj, "message"):
+             for comp in event.message_obj.message:
+                # AstrBot 的 Reply 组件
+                if hasattr(comp, 'type') and comp.type == 'Reply': # Check type name if strict
+                     pass 
+                # Check for Reply component structure
+                if isinstance(comp, Nodes): continue # Skip nodes
+                
+                # Check if it is a Reply object or has id/data['id']
+                # The user reference code checks isinstance(comp, Reply) but we don't have Reply imported easily? 
+                # Actually imported from astrbot.core.message.components but let's be duck-typed or check attributes
+                
+                c_id = getattr(comp, 'id', None)
+                if not c_id and hasattr(comp, 'data') and isinstance(comp.data, dict):
+                    c_id = comp.data.get('id')
+                
+                # In Astrbot, usually Repy component has .id
+                # Let's check if the component string repr has 'reply' logic or check event.message_obj for specific structure
+                pass
+
+        # Use robust extraction from raw_message for reply ID
+        # AstrBot/aiocqhttp logic: raw_event might be the dict we saw in logs
+        raw_evt = getattr(event, 'raw_event', None)
+        if raw_evt and isinstance(raw_evt, dict):
+             msg_segs = raw_evt.get('message', [])
+             if isinstance(msg_segs, list):
+                 for seg in msg_segs:
+                     if seg.get('type') == 'reply':
+                         reply_id = seg.get('data', {}).get('id')
+                         break
+
+
+        if reply_id and not images:
+             # Fetch from API
+             fetched = await self._fetch_reply_images_via_api(event, reply_id)
+             if fetched:
+                 images.extend(fetched)
+        
+        return images
 
     async def cleanup_loop(self):
         """
@@ -422,6 +600,101 @@ class ImgRevSearcherPlugin(Star):
         async for result in self._send_image(event, img_bytes):
                 yield result
 
+    async def _handle_waiting_mode_selection(self, event: AstrMessageEvent, state: dict, user_id: str):
+        """
+        处理模式选择输入 (ASCII2D/IQDB)
+        """
+        message_text = get_message_text(event.message_obj).strip().lower()
+        if not message_text:
+            return
+
+        engine = state.get("engine")
+        extra_params = state.get("search_extra_params", {})
+
+        if engine == "ascii2d":
+            if message_text in ["1", "color", "色合", "颜色"]:
+                extra_params["bovw"] = False
+                await event.send(event.plain_result(f"已选择: 颜色搜索 (Color)"))
+            elif message_text in ["2", "bovw", "特征"]:
+                extra_params["bovw"] = True
+                await event.send(event.plain_result(f"已选择: 特征搜索 (Bovw)"))
+            else:
+                await event.send(event.plain_result("无效输入，请回复 1 (颜色) 或 2 (特征)"))
+                return
+        elif engine == "iqdb":
+            if message_text in ["1", "2d", "anime"]:
+                extra_params["is_3d"] = False
+                await event.send(event.plain_result(f"已选择: 二次元 (2D)"))
+            elif message_text in ["2", "3d", "real"]:
+                extra_params["is_3d"] = True
+                await event.send(event.plain_result(f"已选择: 三次元 (3D)"))
+            else:
+                await event.send(event.plain_result("无效输入，请回复 1 (2D) 或 2 (3D)"))
+                return
+        
+        # 更新参数并清除等待状态
+        state["search_extra_params"] = extra_params
+        state["mode_confirmed"] = True
+        
+        # 恢复图片数据 (从 state 中?)
+        # 此时图片还没有被消费，或者需要重新获取?
+        # _perform_search 需要 img_buffer
+        # 我们需要在 _perform_search_check 中把 img_buffer 这里的逻辑串起来
+        # 当前架构 _perform_search 是一次性调用
+        # 这里我们直接调用 _perform_search 稍微麻烦，因为它需要 img_buffer
+        # 我们可以把 img_buffer 暂时存在 state 已经被序列化了吗? No, state is dict.
+        # ImgRevSearcher 插件逻辑中 state 是存放在 self.user_states 内存中的
+        # 所以我们可以把 BytesIO 暂存 (虽然不太好，暂时可行)
+        
+        img_buffer = state.get("img_buffer_ptr")
+        if img_buffer:
+            img_buffer.seek(0)
+            async for result in self._perform_search(event, engine, img_buffer):
+                yield result
+        else:
+            yield event.plain_result("图片数据丢失，请重新搜索")
+        
+        # 清理: 仅当状态仍为 waiting_mode_selection 时才删除
+        # 如果 _perform_search 已经进入 waiting_text_confirm，则保留
+        current = self.user_states.get(user_id)
+        if current and current.get("step") == "waiting_mode_selection":
+            del self.user_states[user_id]
+        
+        event.stop_event()
+
+    async def _check_and_ask_mode(self, event: AstrMessageEvent, engine: str, img_buffer: io.BytesIO, user_id: str):
+        """
+        检查是否需要询问模式
+        返回 True 表示已拦截并发送询问，False 表示直接继续
+        """
+        state = self.user_states.get(user_id, {})
+        if state.get("mode_confirmed"):
+             return
+             
+        if engine == "ascii2d":
+            self.user_states[user_id] = {
+                "step": "waiting_mode_selection",
+                "timestamp": time.time(),
+                "engine": engine,
+                "img_buffer_ptr": img_buffer, # 暂存指针
+                "search_extra_params": state.get("search_extra_params", {})
+            }
+            yield event.plain_result("请选择 ASCII2D 搜索模式:\n1. 色彩匹配 (Color) \n2. 特征匹配 (Bovw)")
+            return
+            
+        if engine == "iqdb":
+             self.user_states[user_id] = {
+                "step": "waiting_mode_selection",
+                "timestamp": time.time(),
+                "engine": engine,
+                "img_buffer_ptr": img_buffer,
+                "search_extra_params": state.get("search_extra_params", {})
+            }
+             yield event.plain_result("请选择 IQDB 数据库:\n1. 2D (动漫) \n2. 3D (真人)")
+             return
+             
+        return
+
     async def _perform_search(self, event: AstrMessageEvent, engine: str, img_buffer: io.BytesIO):
         """
         调用模型执行图片反向搜索（含异常提示图渲染）
@@ -437,8 +710,39 @@ class ImgRevSearcherPlugin(Star):
         异常:
             出错时生成错误提示图片
         """
+        if engine in ["ascii2d", "iqdb"]:
+             # Check if we need to ask user for mode
+             try:
+                 user_id = event.get_sender_id()
+                 item = self._check_and_ask_mode(event, engine, img_buffer, user_id)
+                 # is async generator
+                 intercepted = False
+                 async for res in item:
+                     yield res
+                     intercepted = True
+                 if intercepted:
+                     # Check if state was set correctly
+                     # event.set_user_state might help persistence if adapter supports it, 
+                     # but we are using self.user_states in this plugin mostly.
+                     # event.set_user_state(user_id, self.user_states[user_id], self.search_params_timeout)
+                     
+                     return
+             except Exception as e:
+                 # Log error but don't crash to avoid "Search failed" if possible, or let it crash to see trace
+                 # For now, just print logic error
+                 print(f"Interaction error: {e}")
+                 # Fallthrough to normal search if interaction fails? Or return?
+                 # If we return, we stop.
+                 return
+
         file_bytes = img_buffer.getvalue()
-        result_text = await self.search_model.search(api=engine, file=file_bytes)
+        
+        # 获取额外参数
+        user_id = event.get_sender_id()
+        state = self.user_states.get(user_id, {})
+        extra_kwargs = state.get("search_extra_params", {})
+        
+        result_text = await self.search_model.search(api=engine, file=file_bytes, **extra_kwargs)
         if result_text is None:
             yield event.plain_result("未找到相关结果")
             return
@@ -478,7 +782,7 @@ class ImgRevSearcherPlugin(Star):
                 except Exception as e:
                     yield event.plain_result(f"发送搜索结果失败: {str(e)}")
         else:
-            yield event.plain_result(f"需要文本格式的结果吗？回复\"是\"以获取，{self.text_confirm_timeout}秒内有效")
+            yield event.plain_result(f"需要文本格式的结果吗？回复\"是\"或\"y\"以获取，{self.text_confirm_timeout}秒内有效")
             user_id = event.get_sender_id()
             self.user_states[user_id] = {
                 "step": "waiting_text_confirm",
@@ -567,24 +871,16 @@ class ImgRevSearcherPlugin(Star):
     async def _handle_waiting_text_confirm(self, event: AstrMessageEvent, state: dict, user_id: str):
         """
         等待用户是否主动获取文本格式结果
-
-        参数:
-            event: 事件对象
-            state: 用户状态
-            user_id: 用户ID
-
-        返回:
-            yield文本消息
-
-        异常:
-            无
         """
-        message_text = get_message_text(event.message_obj)
+        message_text = get_message_text(event.message_obj).strip()
+        
         if time.time() - state["timestamp"] > self.text_confirm_timeout:
             del self.user_states[user_id]
             event.stop_event()
             return
-        elif message_text.strip().lower() == "是":
+
+        # Check for Yes/Y/是
+        if message_text.lower() in ["是", "y"]:
             text_parts = split_text_by_length(state["result_text"])
             sender_name = "图片搜索bot"
             sender_id = event.get_self_id()
@@ -592,6 +888,7 @@ class ImgRevSearcherPlugin(Star):
                 sender_id = int(sender_id)
             except Exception:
                 pass
+            
             for i, part in enumerate(text_parts):
                 node = Node(
                     name=sender_name,
@@ -603,8 +900,12 @@ class ImgRevSearcherPlugin(Star):
                     await event.send(event.chain_result([nodes]))
                 except Exception as e:
                     yield event.plain_result(f"发送搜索结果失败: {str(e)}")
+            
             del self.user_states[user_id]
             event.stop_event()
+        else:
+             # User said something else. 
+             pass
 
     async def _handle_waiting_engine(self, event: AstrMessageEvent, state: dict, user_id: str):
         """
@@ -624,6 +925,15 @@ class ImgRevSearcherPlugin(Star):
         example_engine = self.available_engines[0]
         message_text = get_message_text(event.message_obj).lower()
         if not message_text:
+            # Check for image input
+            collected_imgs = await self._collect_input_images(event)
+            if collected_imgs:
+                state["preloaded_img"] = collected_imgs[0]
+                state["timestamp"] = time.time()
+                yield event.plain_result(f"图片已接收，请回复有效的引擎名（如{example_engine}）")
+                event.stop_event()
+                return
+            
             yield event.plain_result(f"请回复有效的引擎名（如{example_engine}）")
             state["timestamp"] = time.time()
             event.stop_event()
@@ -709,14 +1019,20 @@ class ImgRevSearcherPlugin(Star):
                         yield result
                     event.stop_event()
                     return
+        # 尝试收集图片
         img_buffer = None
-        if img_urls:
-            img_buffer = await self._download_img(img_urls)
+        collected_imgs = await self._collect_input_images(event)
+        if collected_imgs:
+            img_buffer = collected_imgs[0]
+            if img_buffer and not state.get('preloaded_img'):
+                 state["preloaded_img"] = img_buffer
+                 updated = True
         elif is_image_url(message_text):
             img_buffer = await self._download_img(message_text)
-        if img_buffer and not state.get('preloaded_img'):
-            state["preloaded_img"] = img_buffer
-            updated = True
+            if img_buffer and not state.get('preloaded_img'):
+                 state["preloaded_img"] = img_buffer
+                 updated = True
+
         if state.get("engine") and state.get("preloaded_img"):
             self._clear_waiting_states_before_search(user_id)
             try:
@@ -726,6 +1042,8 @@ class ImgRevSearcherPlugin(Star):
                 yield event.plain_result("搜索失败，请重试")
             event.stop_event()
             return
+
+
         if updated:
             state["timestamp"] = time.time()
             async for result in self._send_engine_prompt(event, state):
@@ -756,11 +1074,10 @@ class ImgRevSearcherPlugin(Star):
         异常:
             无
         """
-        img_urls = get_img_urls(event.message_obj)
-        message_text = get_message_text(event.message_obj)
         img_buffer = None
-        if img_urls:
-            img_buffer = await self._download_img(img_urls)
+        collected_imgs = await self._collect_input_images(event)
+        if collected_imgs:
+            img_buffer = collected_imgs[0]
         elif is_image_url(message_text):
             img_buffer = await self._download_img(message_text)
         if img_buffer:
@@ -819,10 +1136,20 @@ class ImgRevSearcherPlugin(Star):
                     }
                 if len(parts) > 2 and is_image_url(parts[2]):
                     url_from_text = parts[2]
-        if img_urls:
-            img_buffer = await self._download_img(img_urls)
+        # Try to collect images using new logic
+        img_buffer = None
+        collected_imgs = await self._collect_input_images(event)
+        
+        # Original logic fallback specifically for text-embedded URL which _collect_input_images might not prioritizing if not in image component
+        # But _collect_input_images does check get_img_urls.
+        # Let's check logic: _collect_input_images calls get_img_urls.
+        # But here we also support "engine image_url" syntax in text parts[1] or parts[2].
+        
+        if collected_imgs:
+            img_buffer = collected_imgs[0]
         elif url_from_text:
-            img_buffer = await self._download_img(url_from_text)
+             img_buffer = await self._download_img(url_from_text)
+             
         return engine, img_buffer, error
 
     async def _handle_initial_search_command(self, event: AstrMessageEvent, user_id: str):
@@ -885,18 +1212,10 @@ class ImgRevSearcherPlugin(Star):
     async def on_message(self, event: AstrMessageEvent):
         """
         插件消息收发主入口，处理各种状态下用户输入分发
-
-        参数:
-            event: AstrMessageEvent事件对象
-
-        返回:
-            yield响应内容
-
-        异常:
-            无
         """
         user_id = event.get_sender_id()
         message_text = get_message_text(event.message_obj)
+        
         # 检查是否以任意一个触发关键词开头
         if any(message_text.strip().startswith(keyword) for keyword in self.trigger_keywords):
             async for result in self._handle_initial_search_command(event, user_id):

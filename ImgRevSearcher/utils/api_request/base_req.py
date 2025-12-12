@@ -51,6 +51,31 @@ class BaseSearchReq(HandOver, ABC, Generic[T]):
         """
         raise NotImplementedError
 
+    async def _upload_image(self, file: FileContent) -> str:
+        """
+        上传图片到Litterbox (临时图床)
+        """
+        # Ensure file content is valid
+        if not file:
+            raise ValueError("File content is empty or None")
+
+        url = "https://litterbox.catbox.moe/resources/internals/api.php"
+        data = {"reqtype": "fileupload", "time": "1h"}
+        files = {"fileToUpload": ("image.jpg", file, "image/jpeg")}
+        
+        try:
+             # Using self.client (httpx.AsyncClient)
+             resp = await self.client.post(url, data=data, files=files)
+             resp.raise_for_status()
+             public_url = resp.text.strip()
+             if not public_url.startswith("http"):
+                  raise ValueError(f"Invalid upload response: {public_url}")
+             return public_url
+        except Exception as e:
+             from astrbot.api import logger
+             logger.error(f"[BaseSearchReq] Upload failed: {e}")
+             raise e
+
     async def _send_request(self, method: str, endpoint: str = "", url: str = "", **kwargs: Any) -> RESP:
         """
         发送HTTP请求
