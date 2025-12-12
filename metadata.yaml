@@ -1,5 +1,6 @@
-name: "astrbot_plugin_img_rev_searcher"
-author: "drdon1234"
+name: "astrbot_plugin_img_rev_searcher_Ver2"
+display_name: 图片反搜聚合Ver2
+author: "YanL"
 description: "图片反搜项目，以图搜图，找出处"
-version: "3.4"
-repo: "https://github.com/drdon1234/astrbot_plugin_img_rev_searcher"
+version: "1.0.0"
+repo: "https://github.com/Yanlyn/astrbot_plugin_img_rev_searcher"

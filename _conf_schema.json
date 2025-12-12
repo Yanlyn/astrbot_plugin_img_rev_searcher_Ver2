@@ -266,7 +266,7 @@
             "description": "国家/地区 (Country)",
             "type": "string",
             "hint": "搜索结果针对的国家/地区代码 (如: cn, us, jp)",
-            "default": "AU"
+            "default": "HK"
           },
           "max_results": {
             "description": "最大结果数",
