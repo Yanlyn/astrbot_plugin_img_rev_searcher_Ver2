@@ -131,3 +131,5 @@ pip install httpx Pillow pyquery typing_extensions
 <img src="https://github.com/user-attachments/assets/92e3012a-b9c7-4f5b-8e52-80b5791acb66" alt="4" width="40%">
 
 </div>
+
+# 致谢： Gemini & ChatGPT
