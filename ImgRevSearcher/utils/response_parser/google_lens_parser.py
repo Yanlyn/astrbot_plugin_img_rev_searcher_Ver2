@@ -18,6 +18,8 @@ class GoogleLensItem(BaseResParser):
     def _parse_data(self, data: Any, **kwargs: Any) -> None:
         pass
 
+
+class GoogleLensResponse(BaseSearchResponse[GoogleLensItem]):
     def __init__(self, resp_data: str, resp_url: str, **kwargs: Any):
         super().__init__(resp_data, resp_url, **kwargs)
         self.max_results = kwargs.get("max_results", 10)
