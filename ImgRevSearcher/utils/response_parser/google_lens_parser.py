@@ -18,13 +18,12 @@ class GoogleLensItem(BaseResParser):
     def _parse_data(self, data: Any, **kwargs: Any) -> None:
         pass
 
-class GoogleLensResponse(BaseSearchResponse[GoogleLensItem]):
     def __init__(self, resp_data: str, resp_url: str, **kwargs: Any):
         super().__init__(resp_data, resp_url, **kwargs)
-        self.ai_overview = ""
         self.max_results = kwargs.get("max_results", 10)
 
     def _parse_response(self, resp_data: str, **kwargs: Any) -> None:
+        self.ai_overview = ""
         self.raw: list[GoogleLensItem] = []
         try:
             data = json.loads(resp_data)
@@ -34,7 +33,7 @@ class GoogleLensResponse(BaseSearchResponse[GoogleLensItem]):
         # Auto-detect engine based on JSON structure
         if "visual_matches" in data or "knowledge_graph" in data or "search_metadata" in data:
             self._parse_serpapi(data)
-        elif "reverse_image_results" in data or "zenserp" in self.resp_url:
+        elif "reverse_image_results" in data or "zenserp" in self.url:
             self._parse_zenserp(data)
         
         # Fallback debug info
@@ -47,12 +46,16 @@ class GoogleLensResponse(BaseSearchResponse[GoogleLensItem]):
 
     def _parse_serpapi(self, data: dict):
         # 1. AI Overview
+        # 1. AI Overview
         if "ai_overview" in data:
             ai_data = data["ai_overview"]
             if isinstance(ai_data, str):
                 self.ai_overview = ai_data
             elif isinstance(ai_data, dict):
-                self.ai_overview = ai_data.get("text") or ai_data.get("snippet") or str(ai_data)
+                # Check for actual content, skip if only token/link (which means "Searching...")
+                text_content = ai_data.get("text") or ai_data.get("snippet")
+                if text_content:
+                    self.ai_overview = text_content
 
         # 2. Exact Matches
         if "exact_matches" in data:
