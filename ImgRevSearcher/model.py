@@ -221,43 +221,46 @@ class BaseSearchModel:
             raise ValueError("file 和 url 参数不能同时提供")
         if file and not url and self._is_gif(file):
             file = await self._convert_gif_to_jpeg(file)
-        try:
-            engine_class = ENGINE_MAP[api]
-            default_params = self.default_params.get(api, {})
-            search_params = {**default_params, **kwargs}
-            network_kwargs = {}
-            if self.proxies:
-                network_kwargs["proxies"] = self.proxies
-            effective_cookies = None
-            if api == "yandex":
-                effective_cookies = await self._get_yandex_cookie()
+        engine_class = ENGINE_MAP[api]
+        default_params = self.default_params.get(api, {})
+        search_params = {**default_params, **kwargs}
+        network_kwargs = {}
+        if self.proxies:
+            network_kwargs["proxies"] = self.proxies
+        effective_cookies = None
+        if api == "yandex":
+            effective_cookies = await self._get_yandex_cookie()
 
-            elif api in self.default_cookies:
-                effective_cookies = self.default_cookies.get(api)
-            elif self.cookies:
-                effective_cookies = self.cookies
-            if effective_cookies:
-                network_kwargs["cookies"] = effective_cookies
-            if self.timeout:
-                network_kwargs["timeout"] = self.timeout
-            async with Network(**network_kwargs) as client:
-                engine_params = self._prepare_engine_params(api, search_params)
-                engine_instance = engine_class(client=client, **engine_params)
-                if api == "animetrace" and search_params.get("base64"):
-                    response = await engine_instance.search(
-                        base64=search_params.pop("base64"),
-                        model=search_params.pop("model", None),
-                        **search_params
-                    )
-                else:
-                    response = await engine_instance.search(file=file, url=url, **search_params)
-                return response.show_result()
-
-        except Exception as e:
-            logger.error(f"[{api}] Search failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
+        # Fix: Check for E-Hentai cookies in search_params (from default_params or kwargs)
+        elif api == "ehentai" and "cookies" in search_params:
+            effective_cookies = search_params.get("cookies") 
+            # Note: We don't pop it here because _prepare_engine_params might expect it, 
+            # or we can pop it. ehentai_req.py pops it in _prepare_engine_params effectively?
+            # No, _prepare_engine_params in model.py pops it. 
+            # So it's fine to just read it here.
+        
+        elif api in self.default_cookies:
+            effective_cookies = self.default_cookies.get(api)
+        elif self.cookies:
+            effective_cookies = self.cookies
+        if effective_cookies:
+            network_kwargs["cookies"] = effective_cookies
+        if self.timeout:
+            network_kwargs["timeout"] = self.timeout
+        
+        # NOTE: Exceptions are now propagated to caller (main.py) to distinguish from "No results"
+        async with Network(**network_kwargs) as client:
+            engine_params = self._prepare_engine_params(api, search_params)
+            engine_instance = engine_class(client=client, **engine_params)
+            if api == "animetrace" and search_params.get("base64"):
+                response = await engine_instance.search(
+                    base64=search_params.pop("base64"),
+                    model=search_params.pop("model", None),
+                    **search_params
+                )
+            else:
+                response = await engine_instance.search(file=file, url=url, **search_params)
+            return response.show_result()
 
     async def search_and_print(self, api: str, file: FileContent = None,
                                url: Optional[str] = None, **kwargs: Any) -> None:

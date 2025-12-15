@@ -62,9 +62,10 @@ class EHentai(BaseSearchReq[EHentaiResponse]):
         endpoint = "upld/image_lookup.php" if self.is_ex else "image_lookup.php"
         data: dict[str, Any] = {"f_sfile": "File Search"}
         if url:
-            files = {"sfile": await self.download(url)}
+            # Add filename to tuple to enable Similarity Search
+            files = {"sfile": ("image.jpg", await self.download(url), "application/octet-stream")}
         elif file:
-            files = {"sfile": read_file(file)}
+            files = {"sfile": ("image.jpg", read_file(file), "application/octet-stream")}
         else:
             raise ValueError("Either 'url' or 'file' must be provided")
         if self.covers:
