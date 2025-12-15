@@ -742,10 +742,20 @@ class ImgRevSearcherPlugin(Star):
         state = self.user_states.get(user_id, {})
         extra_kwargs = state.get("search_extra_params", {})
         
-        result_text = await self.search_model.search(api=engine, file=file_bytes, **extra_kwargs)
-        if result_text is None:
-            yield event.plain_result("未找到相关结果")
-            return
+        try:
+             result_text = await self.search_model.search(api=engine, file=file_bytes, **extra_kwargs)
+             if result_text is None:
+                 yield event.plain_result(f"[{engine}] 未找到相关结果")
+                 return
+        except Exception as e:
+             # Log the error for admin/debug
+             logger.error(f"[{engine}] Search failed: {e}")
+             import traceback
+             logger.error(traceback.format_exc())
+             
+             # Notify user about the specific error
+             yield event.plain_result(f"[{engine}] 搜索出错: {str(e)}")
+             return
         img_buffer.seek(0)
         
         def process_image():

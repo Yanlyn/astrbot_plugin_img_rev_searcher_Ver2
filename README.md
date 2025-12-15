@@ -132,4 +132,10 @@ pip install httpx Pillow pyquery typing_extensions
 
 </div>
 
+## 🔄 更新日志 (2025-12-15)
+
+- **[修复] E-Hentai 搜索失效修复**：解决了因上传逻辑缺失文件名导致 E-Hentai 服务器禁用相似度搜索 (No unfiltered results) 的问题。
+- **[修复] ExHentai Cookie 注入**：修复了配置文件中 Cookie 无法正确注入到请求中的 bug，现在支持正常使用 ExHentai 搜索。
+- **[优化] 错误提示细化**：优化了所有搜索引擎的错误处理逻辑，现在能明确区分“未找到结果”与“网络/API报错”，提供更精准的错误提示。
+
 # 致谢： Gemini & ChatGPT
